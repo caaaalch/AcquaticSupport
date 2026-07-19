@@ -1,37 +1,85 @@
 import os
+import json
 import asyncio
+from datetime import datetime
 
 import discord
 from discord.ext import commands
 from discord.ui import Button, View
 from dotenv import load_dotenv
 
+
 load_dotenv()
 
 TOKEN = os.getenv("TOKEN")
 
 
-# ======================
-# CONFIG
-# ======================
+# =========================
+# CONFIGURAZIONE
+# =========================
 
 PANEL_ROLE_ID = 1528389285798220017
 STAFF_ROLE_ID = 1528389285798220017
 
 SUPPORT_CATEGORY_ID = 1525198804746244339
+
 REQUEST_CHANNEL_ID = 1525198804746244340
+
 LOG_CHANNEL_ID = 1528390401160118343
 
 
-# memoria assistenze
-support_channels = {}
+TICKETS_FILE = "tickets.json"
 
 
-# ======================
+
+# =========================
+# DATABASE JSON
+# =========================
+
+def load_tickets():
+
+    try:
+        with open(
+            TICKETS_FILE,
+            "r",
+            encoding="utf-8"
+        ) as f:
+
+            return json.load(f)
+
+    except:
+
+        return {}
+
+
+
+def save_tickets():
+
+    with open(
+        TICKETS_FILE,
+        "w",
+        encoding="utf-8"
+    ) as f:
+
+        json.dump(
+            tickets,
+            f,
+            indent=4
+        )
+
+
+
+tickets = load_tickets()
+
+
+
+# =========================
 # BOT
-# ======================
+# =========================
+
 
 intents = discord.Intents.default()
+
 intents.members = True
 intents.message_content = True
 intents.voice_states = True
@@ -42,13 +90,11 @@ bot = commands.Bot(
     intents=intents
 )
 
+# =========================
+# VIEW CHIUSURA
+# =========================
 
-
-# ======================
-# CHIUSURA
-# ======================
-
-class CloseSupportView(View):
+class CloseTicketView(View):
 
     def __init__(self):
         super().__init__(timeout=None)
@@ -57,92 +103,28 @@ class CloseSupportView(View):
     @discord.ui.button(
         label="🔒 Chiudi assistenza",
         style=discord.ButtonStyle.red,
-        custom_id="close_support"
+        custom_id="close_ticket"
     )
-    async def close(
+    async def close_ticket(
         self,
         interaction: discord.Interaction,
         button: Button
     ):
 
-        user = interaction.user
-        guild = interaction.guild
-
-        staff_role = guild.get_role(
-            STAFF_ROLE_ID
+        channel = interaction.guild.get_channel(
+            tickets[str(interaction.guild.id)]["channel"]
         )
 
-
-        channel_id = None
-
-
-        for voice_id, owner_id in support_channels.items():
-
-            if owner_id == user.id:
-                channel_id = voice_id
-                break
-
-
-            if staff_role in user.roles:
-                channel_id = voice_id
-                break
-
-
-
-        if channel_id is None:
-
-            await interaction.response.send_message(
-                "❌ Non puoi chiudere questa assistenza.",
-                ephemeral=True
-            )
-
-            return
-
-
-
-        channel = guild.get_channel(
-            channel_id
-        )
-
-
-        log = guild.get_channel(
-            LOG_CHANNEL_ID
-        )
-
-
-        if log:
-
-            await log.send(
-                f"🔒 **Assistenza chiusa**\n"
-                f"Da: {user.mention}\n"
-                f"Canale: `{channel.name}`"
-            )
-
-
-        await interaction.response.send_message(
-            "✅ Assistenza chiusa.",
-            ephemeral=True
-        )
-
-
-        if channel:
-
-            await channel.delete()
-
-
-
-        support_channels.pop(
-            channel_id,
-            None
+        await close_ticket(
+            interaction,
+            channel
         )
 
 
 
-
-
-# ======================
-# APERTURA
-# ======================
+# =========================
+# VIEW APERTURA
+# =========================
 
 class SupportView(View):
 
@@ -150,40 +132,41 @@ class SupportView(View):
         super().__init__(timeout=None)
 
 
-
     @discord.ui.button(
         label="🎧 Richiedi assistenza",
         style=discord.ButtonStyle.green,
-        custom_id="support_open"
+        custom_id="open_ticket"
     )
-    async def open(
+    async def open_ticket(
         self,
         interaction: discord.Interaction,
         button: Button
     ):
+
 
         guild = interaction.guild
         user = interaction.user
 
 
 
-        # controlla doppio ticket
+        # controllo ticket già aperto
 
-        if user.id in support_channels.values():
+        for ticket in tickets.values():
 
-            await interaction.response.send_message(
-                "❌ Hai già un'assistenza aperta.",
-                ephemeral=True
-            )
+            if ticket.get("user") == user.id:
 
-            return
+                await interaction.response.send_message(
+                    "❌ Hai già una richiesta di assistenza aperta.",
+                    ephemeral=True
+                )
+
+                return
 
 
 
         category = guild.get_channel(
             SUPPORT_CATEGORY_ID
         )
-
 
         staff_role = guild.get_role(
             STAFF_ROLE_ID
@@ -219,64 +202,133 @@ class SupportView(View):
 
 
         voice = await guild.create_voice_channel(
+
             name=f"assistenza-{user.name}",
+
             category=category,
+
             overwrites=permissions
+
         )
 
 
 
-        support_channels[voice.id] = user.id
+        # crea dati ticket
+
+        tickets[str(voice.id)] = {
+
+            "guild": guild.id,
+
+            "user": user.id,
+
+            "channel": voice.id,
+
+            "claimed": None,
+
+            "staff": [],
+
+            "created": datetime.now().timestamp(),
+
+            "message": None
+
+        }
+
+
+        save_tickets()
 
 
 
-        # ping staff
+        # messaggio richiesta staff
 
-        request = guild.get_channel(
+        request_channel = guild.get_channel(
             REQUEST_CHANNEL_ID
         )
 
 
-        if request:
-
-            await request.send(
-
-                f"🚨 **Nuova richiesta assistenza!**\n"
-                f"{staff_role.mention}\n"
-                f"Utente: {user.mention}\n"
-                f"Canale: {voice.mention}",
-
-                allowed_mentions=discord.AllowedMentions(
-                    roles=True,
-                    users=True
-                )
-
-            )
-
-
-
-        # risposta privata
-
         embed = discord.Embed(
 
-            title="🎧 Assistenza aperta",
+            title="🚨 Nuova richiesta assistenza",
+
+            color=discord.Color.orange(),
+
+            timestamp=datetime.now()
+
+        )
+
+
+        embed.add_field(
+
+            name="👤 Utente",
+
+            value=user.mention,
+
+            inline=False
+
+        )
+
+
+        embed.add_field(
+
+            name="🔊 Canale",
+
+            value=voice.mention,
+
+            inline=False
+
+        )
+
+
+        embed.add_field(
+
+            name="📌 Stato",
+
+            value="⏳ In attesa di uno staff",
+
+            inline=False
+
+        )
+
+
+        msg = await request_channel.send(
+
+            content=staff_role.mention,
+
+            embed=embed,
+
+            allowed_mentions=discord.AllowedMentions(
+                roles=True
+            )
+
+        )
+
+
+        tickets[str(voice.id)]["message"] = msg.id
+
+        save_tickets()
+
+
+
+        # risposta privata utente
+
+        private = discord.Embed(
+
+            title="🎧 Assistenza creata",
 
             description=
             f"Il tuo canale è stato creato:\n\n"
             f"{voice.mention}\n\n"
-            "Quando hai finito premi il pulsante.",
+            "Attendi l'arrivo dello staff.",
 
             color=discord.Color.blue()
 
         )
 
 
-
         await interaction.response.send_message(
 
-            embed=embed,
+            embed=private,
 
-            view=CloseSupportView(),
+            view=CloseTicketView(),
 
             ephemeral=True
 
@@ -284,21 +336,149 @@ class SupportView(View):
 
 
 
-        # sposta
+        # sposta utente
 
         if user.voice:
 
             await user.move_to(
                 voice
             )
+            
+# =========================
+# FUNZIONE CHIUSURA
+# =========================
+
+async def close_ticket(interaction, channel):
+
+    if channel is None:
+        return
+
+
+    ticket = tickets.get(
+        str(channel.id)
+    )
+
+
+    if ticket is None:
+        return
+
+
+
+    guild = interaction.guild
+
+
+    log = guild.get_channel(
+        LOG_CHANNEL_ID
+    )
+
+
+
+    duration = int(
+        datetime.now().timestamp()
+        -
+        ticket["created"]
+    )
+
+
+    minutes = duration // 60
+
+
+
+    staff_text = "Nessuno"
+
+
+    if ticket["staff"]:
+
+        staff_text = " ".join(
+            f"<@{x}>"
+            for x in ticket["staff"]
+        )
+
+
+
+    embed = discord.Embed(
+
+        title="🔒 Assistenza terminata",
+
+        color=discord.Color.red(),
+
+        timestamp=datetime.now()
+
+    )
+
+
+    embed.add_field(
+
+        name="👤 Utente",
+
+        value=f"<@{ticket['user']}>",
+
+        inline=False
+
+    )
+
+
+    embed.add_field(
+
+        name="🛡️ Staff partecipante",
+
+        value=staff_text,
+
+        inline=False
+
+    )
+
+
+    embed.add_field(
+
+        name="⏱️ Durata",
+
+        value=f"{minutes} minuti",
+
+        inline=False
+
+    )
+
+
+    embed.add_field(
+
+        name="📁 Canale",
+
+        value=channel.name,
+
+        inline=False
+
+    )
+
+
+    if log:
+
+        await log.send(
+            embed=embed
+        )
+
+
+
+    tickets.pop(
+        str(channel.id),
+        None
+    )
+
+
+    save_tickets()
+
+
+
+    await channel.delete()
 
 
 
 
 
-# ======================
-# AUTO DELETE USCITA
-# ======================
+
+# =========================
+# CLAIM STAFF
+# =========================
 
 @bot.event
 async def on_voice_state_update(
@@ -307,72 +487,162 @@ async def on_voice_state_update(
     after
 ):
 
-    if before.channel is None:
-        return
+
+    # entrato in vocale
+
+    if after.channel is not None:
 
 
-    channel = before.channel
+        channel = after.channel
 
 
-    if channel.id not in support_channels:
-        return
+        ticket = tickets.get(
+            str(channel.id)
+        )
 
 
-
-    owner_id = support_channels[channel.id]
-
+        if ticket:
 
 
-    if member.id == owner_id:
-
-
-        await asyncio.sleep(5)
-
-
-
-        if len(channel.members) == 0:
-
-
-            log = channel.guild.get_channel(
-                LOG_CHANNEL_ID
-            )
-
-
-            if log:
-
-                await log.send(
-                    f"🗑️ Assistenza terminata automaticamente\n"
-                    f"Utente: {member.mention}\n"
-                    f"Canale: `{channel.name}`"
-                )
-
-
-            await channel.delete()
-
-
-            support_channels.pop(
-                channel.id,
-                None
+            staff_role = channel.guild.get_role(
+                STAFF_ROLE_ID
             )
 
 
 
+            if staff_role in member.roles:
 
 
-# ======================
+                if member.id not in ticket["staff"]:
+
+                    ticket["staff"].append(
+                        member.id
+                    )
+
+
+
+                if ticket["claimed"] is None:
+
+
+                    ticket["claimed"] = member.id
+
+
+
+                    request = channel.guild.get_channel(
+                        REQUEST_CHANNEL_ID
+                    )
+
+
+                    if request:
+
+
+                        try:
+
+                            msg = await request.fetch_message(
+                                ticket["message"]
+                            )
+
+
+                            embed = msg.embeds[0]
+
+
+                            embed.color = discord.Color.green()
+
+
+                            for field in embed.fields:
+
+                                if field.name == "📌 Stato":
+
+                                    embed.set_field_at(
+
+                                        embed.fields.index(field),
+
+                                        name="📌 Stato",
+
+                                        value=
+                                        f"🟢 Claimato da {member.mention}",
+
+                                        inline=False
+
+                                    )
+
+
+                            await msg.edit(
+                                embed=embed
+                            )
+
+
+                        except:
+
+                            pass
+
+
+
+                save_tickets()
+
+
+
+    # uscita utente
+
+    if before.channel is not None:
+
+
+        channel = before.channel
+
+
+        ticket = tickets.get(
+            str(channel.id)
+        )
+
+
+        if ticket:
+
+
+            if member.id == ticket["user"]:
+
+
+                await asyncio.sleep(5)
+
+
+                if len(channel.members) == 0:
+
+
+                    fake_interaction = type(
+                        "obj",
+                        (),
+                        {
+                            "guild": channel.guild
+                        }
+                    )()
+
+
+                    await close_ticket(
+                        fake_interaction,
+                        channel
+                    )
+
+
+
+
+
+# =========================
 # READY
-# ======================
+# =========================
+
 
 @bot.event
 async def on_ready():
+
 
     bot.add_view(
         SupportView()
     )
 
+
     bot.add_view(
-        CloseSupportView()
+        CloseTicketView()
     )
+
 
     print(
         f"{bot.user} online!"
@@ -382,12 +652,14 @@ async def on_ready():
 
 
 
-# ======================
-# PANNELLO
-# ======================
+# =========================
+# CREAZIONE PANNELLO
+# =========================
+
 
 @bot.command()
 async def pannello(ctx):
+
 
     role = ctx.guild.get_role(
         PANEL_ROLE_ID
@@ -395,6 +667,7 @@ async def pannello(ctx):
 
 
     if role not in ctx.author.roles:
+
 
         await ctx.send(
             "❌ Non hai il permesso.",
@@ -407,13 +680,19 @@ async def pannello(ctx):
 
     embed = discord.Embed(
 
-        title="🎧 Supporto",
+        title="🎧 Centro Assistenza",
 
         description=
-        "Premi il pulsante per richiedere assistenza.",
+        "Hai bisogno di aiuto?\n\n"
+        "Premi il pulsante qui sotto per aprire una chiamata con lo staff.",
 
         color=discord.Color.blue()
 
+    )
+
+
+    embed.set_footer(
+        text="Sistema assistenza"
     )
 
 
@@ -428,5 +707,9 @@ async def pannello(ctx):
 
 
 
+
+# =========================
+# START
+# =========================
 
 bot.run(TOKEN)
