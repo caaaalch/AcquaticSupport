@@ -1,4 +1,5 @@
 import os
+import asyncio
 
 import discord
 from discord.ext import commands
@@ -9,7 +10,11 @@ load_dotenv()
 
 TOKEN = os.getenv("TOKEN")
 
-# CONFIGURAZIONE ID
+
+# ======================
+# CONFIG
+# ======================
+
 PANEL_ROLE_ID = 1528389285798220017
 STAFF_ROLE_ID = 1528389285798220017
 
@@ -18,13 +23,18 @@ REQUEST_CHANNEL_ID = 1525198804746244340
 LOG_CHANNEL_ID = 1528390401160118343
 
 
-# salva proprietari assistenze
-support_owners = {}
+# memoria assistenze
+support_channels = {}
 
+
+# ======================
+# BOT
+# ======================
 
 intents = discord.Intents.default()
 intents.members = True
 intents.message_content = True
+intents.voice_states = True
 
 
 bot = commands.Bot(
@@ -34,9 +44,9 @@ bot = commands.Bot(
 
 
 
-# ==========================
-# CHIUSURA ASSISTENZA
-# ==========================
+# ======================
+# CHIUSURA
+# ======================
 
 class CloseSupportView(View):
 
@@ -55,59 +65,57 @@ class CloseSupportView(View):
         button: Button
     ):
 
-        channel = interaction.guild.get_channel(
-            support_owners.get(interaction.user.id)
-        )
-
         user = interaction.user
+        guild = interaction.guild
 
-        staff_role = interaction.guild.get_role(
+        staff_role = guild.get_role(
             STAFF_ROLE_ID
         )
 
 
-        # controlla permessi
-
-        allowed = False
+        channel_id = None
 
 
-        if staff_role in user.roles:
-            allowed = True
+        for voice_id, owner_id in support_channels.items():
+
+            if owner_id == user.id:
+                channel_id = voice_id
+                break
 
 
-        if interaction.user.id in support_owners:
-            allowed = True
+            if staff_role in user.roles:
+                channel_id = voice_id
+                break
 
 
 
-        if not allowed:
+        if channel_id is None:
+
             await interaction.response.send_message(
                 "❌ Non puoi chiudere questa assistenza.",
                 ephemeral=True
             )
+
             return
 
 
 
-        log = interaction.guild.get_channel(
+        channel = guild.get_channel(
+            channel_id
+        )
+
+
+        log = guild.get_channel(
             LOG_CHANNEL_ID
         )
 
 
         if log:
 
-            embed = discord.Embed(
-                title="🔒 Assistenza chiusa",
-                color=discord.Color.red()
-            )
-
-            embed.add_field(
-                name="Chiusa da",
-                value=user.mention
-            )
-
             await log.send(
-                embed=embed
+                f"🔒 **Assistenza chiusa**\n"
+                f"Da: {user.mention}\n"
+                f"Canale: `{channel.name}`"
             )
 
 
@@ -118,13 +126,23 @@ class CloseSupportView(View):
 
 
         if channel:
+
             await channel.delete()
 
 
 
-# ==========================
-# APERTURA ASSISTENZA
-# ==========================
+        support_channels.pop(
+            channel_id,
+            None
+        )
+
+
+
+
+
+# ======================
+# APERTURA
+# ======================
 
 class SupportView(View):
 
@@ -136,9 +154,9 @@ class SupportView(View):
     @discord.ui.button(
         label="🎧 Richiedi assistenza",
         style=discord.ButtonStyle.green,
-        custom_id="open_support"
+        custom_id="support_open"
     )
-    async def support(
+    async def open(
         self,
         interaction: discord.Interaction,
         button: Button
@@ -148,17 +166,17 @@ class SupportView(View):
         user = interaction.user
 
 
-        # evita doppioni
 
-        for owner in support_owners:
-            if owner == user.id:
+        # controlla doppio ticket
 
-                await interaction.response.send_message(
-                    "❌ Hai già una assistenza aperta.",
-                    ephemeral=True
-                )
+        if user.id in support_channels.values():
 
-                return
+            await interaction.response.send_message(
+                "❌ Hai già un'assistenza aperta.",
+                ephemeral=True
+            )
+
+            return
 
 
 
@@ -173,7 +191,7 @@ class SupportView(View):
 
 
 
-        overwrites = {
+        permissions = {
 
             guild.default_role:
             discord.PermissionOverwrite(
@@ -203,55 +221,70 @@ class SupportView(View):
         voice = await guild.create_voice_channel(
             name=f"assistenza-{user.name}",
             category=category,
-            overwrites=overwrites
+            overwrites=permissions
         )
 
 
-        # salva proprietario
 
-        support_owners[user.id] = voice.id
-
+        support_channels[voice.id] = user.id
 
 
-        # avviso staff
 
-        request_channel = guild.get_channel(
+        # ping staff
+
+        request = guild.get_channel(
             REQUEST_CHANNEL_ID
         )
 
 
-        if request_channel:
+        if request:
 
-            await request_channel.send(
-                f"🚨 Nuova richiesta assistenza!\n\n"
+            await request.send(
+
+                f"🚨 **Nuova richiesta assistenza!**\n"
                 f"{staff_role.mention}\n"
                 f"Utente: {user.mention}\n"
-                f"Canale: {voice.mention}"
+                f"Canale: {voice.mention}",
+
+                allowed_mentions=discord.AllowedMentions(
+                    roles=True,
+                    users=True
+                )
+
             )
 
 
 
-        # messaggio privato
+        # risposta privata
 
         embed = discord.Embed(
+
             title="🎧 Assistenza aperta",
+
             description=
             f"Il tuo canale è stato creato:\n\n"
             f"{voice.mention}\n\n"
-            "Quando hai finito premi il pulsante qui sotto.",
+            "Quando hai finito premi il pulsante.",
+
             color=discord.Color.blue()
+
         )
+
 
 
         await interaction.response.send_message(
+
             embed=embed,
+
             view=CloseSupportView(),
+
             ephemeral=True
+
         )
 
 
 
-        # sposta utente
+        # sposta
 
         if user.voice:
 
@@ -263,9 +296,72 @@ class SupportView(View):
 
 
 
-# ==========================
+# ======================
+# AUTO DELETE USCITA
+# ======================
+
+@bot.event
+async def on_voice_state_update(
+    member,
+    before,
+    after
+):
+
+    if before.channel is None:
+        return
+
+
+    channel = before.channel
+
+
+    if channel.id not in support_channels:
+        return
+
+
+
+    owner_id = support_channels[channel.id]
+
+
+
+    if member.id == owner_id:
+
+
+        await asyncio.sleep(5)
+
+
+
+        if len(channel.members) == 0:
+
+
+            log = channel.guild.get_channel(
+                LOG_CHANNEL_ID
+            )
+
+
+            if log:
+
+                await log.send(
+                    f"🗑️ Assistenza terminata automaticamente\n"
+                    f"Utente: {member.mention}\n"
+                    f"Canale: `{channel.name}`"
+                )
+
+
+            await channel.delete()
+
+
+            support_channels.pop(
+                channel.id,
+                None
+            )
+
+
+
+
+
+# ======================
 # READY
-# ==========================
+# ======================
 
 @bot.event
 async def on_ready():
@@ -279,16 +375,16 @@ async def on_ready():
     )
 
     print(
-        f"{bot.user} è online!"
+        f"{bot.user} online!"
     )
 
 
 
 
 
-# ==========================
-# CREAZIONE PANNELLO
-# ==========================
+# ======================
+# PANNELLO
+# ======================
 
 @bot.command()
 async def pannello(ctx):
@@ -301,7 +397,7 @@ async def pannello(ctx):
     if role not in ctx.author.roles:
 
         await ctx.send(
-            "❌ Non puoi creare il pannello.",
+            "❌ Non hai il permesso.",
             delete_after=5
         )
 
@@ -310,16 +406,23 @@ async def pannello(ctx):
 
 
     embed = discord.Embed(
+
         title="🎧 Supporto",
+
         description=
-        "Premi il pulsante qui sotto per richiedere assistenza.",
+        "Premi il pulsante per richiedere assistenza.",
+
         color=discord.Color.blue()
+
     )
 
 
     await ctx.send(
+
         embed=embed,
+
         view=SupportView()
+
     )
 
 
