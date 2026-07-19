@@ -9,8 +9,10 @@ load_dotenv()
 
 TOKEN = os.getenv("TOKEN")
 
-# ID ruolo che può creare il pannello
+# Configurazione
 SUPPORT_PANEL_ROLE = 1528389285798220017
+SUPPORT_CATEGORY_ID = 1525198804746244339
+STAFF_ROLE_ID = 1528389285798220017
 
 intents = discord.Intents.default()
 intents.members = True
@@ -36,10 +38,63 @@ class SupportView(View):
         interaction: discord.Interaction,
         button: Button
     ):
+
+        guild = interaction.guild
+        user = interaction.user
+
+        # Controlla se ha già un'assistenza aperta
+        existing_channel = discord.utils.get(
+            guild.voice_channels,
+            name=f"assistenza-{user.name}"
+        )
+
+        if existing_channel:
+            await interaction.response.send_message(
+                "❌ Hai già una richiesta di assistenza aperta.",
+                ephemeral=True
+            )
+            return
+
+        category = guild.get_channel(SUPPORT_CATEGORY_ID)
+        staff_role = guild.get_role(STAFF_ROLE_ID)
+
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(
+                view_channel=False
+            ),
+
+            user: discord.PermissionOverwrite(
+                view_channel=True,
+                connect=True,
+                speak=True
+            ),
+
+            staff_role: discord.PermissionOverwrite(
+                view_channel=True,
+                connect=True,
+                speak=True
+            )
+        }
+
+        channel = await guild.create_voice_channel(
+            name=f"assistenza-{user.name}",
+            category=category,
+            overwrites=overwrites
+        )
+
         await interaction.response.send_message(
-            "✅ Richiesta assistenza ricevuta!",
+            f"✅ Canale creato: {channel.mention}",
             ephemeral=True
         )
+
+        # Sposta l'utente nel vocale
+        if user.voice:
+            await user.move_to(channel)
+        else:
+            await interaction.followup.send(
+                "🎧 Entra nel canale appena creato per iniziare l'assistenza.",
+                ephemeral=True
+            )
 
 
 @bot.event
